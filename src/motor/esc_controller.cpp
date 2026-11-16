@@ -24,10 +24,13 @@ uint16_t roundedPulse(float value) {
 }  // namespace
 
 uint16_t EscController::pulseFor(const MotorCommand& command) {
+  // Bound both values before mapping so malformed commands cannot exceed the
+  // configured ESC range. A command containing both drive and brake is neutral.
   const float drive = clampUnit(command.drive);
   const float brake = clampUnit(command.brake);
 
   if (drive > 0.0f && brake == 0.0f) {
+    // Positive drive starts beyond the neutral deadband and scales to max pulse.
     const float usableRange =
         config::kEscPulseMaxUs - config::kEscNeutralUs - config::kEscDeadbandUs;
     return roundedPulse(config::kEscNeutralUs + config::kEscDeadbandUs +
@@ -35,6 +38,7 @@ uint16_t EscController::pulseFor(const MotorCommand& command) {
   }
 
   if (brake > 0.0f && drive == 0.0f) {
+    // Braking scales below neutral, leaving the same deadband around center.
     const float usableRange =
         config::kEscNeutralUs - config::kEscPulseMinUs - config::kEscDeadbandUs;
     return roundedPulse(config::kEscNeutralUs - config::kEscDeadbandUs -

@@ -33,9 +33,12 @@ void IRAM_ATTR captureReceiverChannel(uint8_t channel, int pin) {
 
   portENTER_CRITICAL_ISR(&receiverMux);
   if (high) {
+    // A rising edge starts a new receiver pulse; the falling edge ends it.
     receiverRiseUs[channel] = nowUs;
   } else {
     const uint32_t widthUs = nowUs - receiverRiseUs[channel];
+    // Ignore an edge with no recorded start, and reject widths that cannot fit
+    // in the pulse-width field. A valid falling edge also refreshes this channel.
     if (receiverRiseUs[channel] != 0 && widthUs <= UINT16_MAX) {
       receiverPulseUs[channel] = static_cast<uint16_t>(widthUs);
       receiverUpdatedAtUs[channel] = nowUs;
@@ -60,6 +63,8 @@ void IRAM_ATTR captureDriveMode() {
 // Copies the latest receiver measurements into a stable frame for the controller.
 roadrunner::ReceiverFrame readReceiverFrame() {
   roadrunner::ReceiverFrame frame;
+  // The ISR can update these values at any time, so copy all three channels
+  // while holding the same lock used by the interrupt handlers.
   portENTER_CRITICAL(&receiverMux);
   frame.throttleUs = receiverPulseUs[kThrottleChannel];
   frame.steeringUs = receiverPulseUs[kSteeringChannel];
@@ -96,10 +101,13 @@ void writeNeutralOutputs() {
 void setup() {
   Serial.begin(115200);
 
+  // Configure the three receiver signals as inputs before enabling interrupts.
   pinMode(roadrunner::pins::kReceiverThrottle, INPUT);
   pinMode(roadrunner::pins::kReceiverSteering, INPUT);
   pinMode(roadrunner::pins::kReceiverDriveMode, INPUT);
 
+  // Start all output devices, then immediately command neutral/center so the
+  // ESCs and steering servo do not receive motion commands during startup.
   const bool frontReady = attachOutput(frontEsc, roadrunner::pins::kFrontEscPpm);
   const bool rearReady = attachOutput(rearEsc, roadrunner::pins::kRearEscPpm);
   const bool steeringReady =
@@ -107,6 +115,7 @@ void setup() {
   outputsReady = frontReady && rearReady && steeringReady;
   writeNeutralOutputs();
 
+  // Measure both edges of each receiver signal to calculate pulse widths.
   attachInterrupt(digitalPinToInterrupt(roadrunner::pins::kReceiverThrottle),
                   captureThrottle, CHANGE);
   attachInterrupt(digitalPinToInterrupt(roadrunner::pins::kReceiverSteering),
@@ -114,8 +123,10 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(roadrunner::pins::kReceiverDriveMode),
                   captureDriveMode, CHANGE);
 
+  // Begin the safety state machine only after the hardware and input paths are set up.
   vehicleController.begin(millis());
   if (!outputsReady) {
+    // A partially initialized output set must never be treated as drive-ready.
     vehicleController.setEmergencyStopActive(true);
     Serial.println("ERROR: PWM output initialization failed; vehicle remains disarmed.");
   }
@@ -123,17 +134,22 @@ void setup() {
 
 void loop() {
   if (!outputsReady) {
+    // Keep retrying neutral commands and skip all normal control updates.
     writeNeutralOutputs();
     delay(10);
     return;
   }
 
+  // Each loop reads one consistent receiver snapshot and lets the controller
+  // apply validation, freshness checks, safety rules, and command mapping.
   const uint32_t nowUs = micros();
   const roadrunner::VehicleOutputs outputs =
       vehicleController.update(readReceiverFrame(), nowUs);
 
+  // Send the controller's final pulse widths to the two ESCs and steering servo.
   frontEsc.writeMicroseconds(outputs.frontEscUs);
   rearEsc.writeMicroseconds(outputs.rearEscUs);
   steeringServo.writeMicroseconds(outputs.steeringUs);
+  // Yield briefly so the loop does not continuously poll at full CPU speed.
   delay(5);
 }

@@ -6,7 +6,8 @@
 namespace roadrunner {
 
 uint16_t Steering::pulseFor(uint16_t receiverPulseUs) const {
-  // Clamp the incoming RC pulse so out-of-range values do not break the servo mapping.
+  // Step 1: clamp the receiver signal to its expected range so invalid values
+  // cannot request a steering position beyond the servo's calibrated limits.
   uint16_t input = receiverPulseUs;
   if (input < config::kRcPulseMinUs) {
     input = config::kRcPulseMinUs;
@@ -14,7 +15,8 @@ uint16_t Steering::pulseFor(uint16_t receiverPulseUs) const {
     input = config::kRcPulseMaxUs;
   }
 
-  // Scale the trimmed receiver range into the steering servo range.
+  // Step 2: linearly scale the clamped input range to the servo range. Adding
+  // half the input range before division rounds to the nearest whole microsecond.
   const uint32_t inputRange = config::kRcPulseMaxUs - config::kRcPulseMinUs;
   const uint32_t outputRange = config::kSteeringMaxUs - config::kSteeringMinUs;
   const uint32_t offset =

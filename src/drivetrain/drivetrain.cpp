@@ -33,11 +33,14 @@ MotorCommand brake(float amount) {
 // Positive throttle dispatches according to the selected drivetrain mode.
 DriveCommands Drivetrain::commandsFor(float throttle, DriveMode mode) const {
   const float input = clampSigned(throttle);
+  // Negative throttle means braking regardless of selected drive mode.
   if (input < 0.0f) {
     const MotorCommand braking = brake(-input);
     return {braking, braking};
   }
 
+  // For forward throttle, the selected mode decides which axle drives and
+  // which axle brakes: AWD drives both; each dig mode brakes the opposite axle.
   switch (mode) {
     case DriveMode::FrontDig:
       return {drive(input), brake(input)};

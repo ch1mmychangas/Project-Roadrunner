@@ -13,6 +13,7 @@ bool pulseIsValid(uint16_t pulseUs) {
 
 // Determines whether the receiver pulse is fresh enough to trust.
 bool isFresh(uint32_t updatedAtUs, uint32_t nowUs) {
+  // Unsigned subtraction also handles the micros() counter wrapping around.
   return static_cast<uint32_t>(nowUs - updatedAtUs) <=
          config::kReceiverTimeoutMs * 1000UL;
 }
@@ -61,26 +62,34 @@ void VehicleController::begin(uint32_t nowMs) {
 }
 
 VehicleOutputs VehicleController::update(const ReceiverFrame& receiver, uint32_t nowUs) {
+  // Step 1: every channel must be inside the receiver's configured pulse range.
   const bool valid =
       pulseIsValid(receiver.throttleUs) && pulseIsValid(receiver.steeringUs) &&
       pulseIsValid(receiver.driveModeUs);
+  // Step 2: every channel must also have produced a recent pulse.
   const bool fresh =
       isFresh(receiver.throttleUpdatedAtUs, nowUs) &&
       isFresh(receiver.steeringUpdatedAtUs, nowUs) &&
       isFresh(receiver.driveModeUpdatedAtUs, nowUs);
+  // Step 3: arming is permitted only while throttle remains inside its deadband.
   const bool throttleNeutral =
       receiver.throttleUs >= config::kRcNeutralUs - config::kThrottleDeadbandUs &&
       receiver.throttleUs <= config::kRcNeutralUs + config::kThrottleDeadbandUs;
+  // The safety state machine decides whether any motion output may be produced.
   const bool armed = safety_.update(nowUs / 1000UL, valid && fresh, throttleNeutral);
 
   if (!armed) {
+    // Invalid, stale, or not-yet-armed input always produces neutral outputs.
     return safeOutputs();
   }
 
+  // Step 4: turn the throttle pulse into a signed command and select the axle mode.
   const DriveCommands commands =
       drivetrain_.commandsFor(throttleCommand(receiver.throttleUs),
                                driveMode(receiver.driveModeUs));
+  // Step 5: convert each axle's drive/brake command into its ESC pulse width.
   const EscPulseOutputs escPulses = EscController::pulsesFor(commands);
+  // Step 6: map steering separately, then return the complete output frame.
   return {escPulses.frontUs, escPulses.rearUs,
           steering_.pulseFor(receiver.steeringUs), true};
 }
